@@ -1,0 +1,2147 @@
+import React, { useState, useEffect, useRef, useMemo } from 'react';
+import {
+  Activity,
+  Brain,
+  ShieldAlert,
+  ShieldCheck,
+  Sparkles,
+  Flame,
+  Trash2,
+  Moon,
+  Sun,
+  Zap,
+  Package,
+  Sliders,
+  Volume2,
+  VolumeX,
+  Copy,
+  Check,
+  RefreshCw,
+  FolderTree,
+  Smartphone,
+  Download,
+  Upload,
+  ChevronRight,
+  Crosshair,
+  Layers,
+  Award,
+  Terminal,
+  Feather,
+  Mic,
+  Radio,
+  Lock,
+  Unlock,
+  RotateCcw,
+  Star
+} from 'lucide-react';
+
+// ============================================================================
+// 1. OFFLINE-FIRST STORAGE ENGINE (IndexedDB Primary + LocalStorage Fallback)
+// ============================================================================
+const DB_NAME = 'CognitiveEcologyPWA_DB';
+const DB_VERSION = 1;
+const STORE_NAME = 'ecology_state';
+const LS_KEY = 'cognitive_ecology_pwa_v1';
+
+const openEcologyDB = () => {
+  return new Promise((resolve, reject) => {
+    if (typeof window === 'undefined' || !window.indexedDB) {
+      reject(new Error('IndexedDB unavailable'));
+      return;
+    }
+    try {
+      const request = window.indexedDB.open(DB_NAME, DB_VERSION);
+      request.onupgradeneeded = (e) => {
+        const db = e.target.result;
+        if (!db.objectStoreNames.contains(STORE_NAME)) {
+          db.createObjectStore(STORE_NAME);
+        }
+      };
+      request.onsuccess = (e) => resolve(e.target.result);
+      request.onerror = (e) => reject(e.target.error);
+    } catch (err) {
+      reject(err);
+    }
+  });
+};
+
+const saveStateOffline = async (state) => {
+  try {
+    window.localStorage.setItem(LS_KEY, JSON.stringify(state));
+  } catch (e) {
+    // Ignore storage quota or sandbox restrictions
+  }
+  try {
+    const db = await openEcologyDB();
+    return new Promise((resolve) => {
+      const tx = db.transaction(STORE_NAME, 'readwrite');
+      const store = tx.objectStore(STORE_NAME);
+      store.put(state, 'root');
+      tx.oncomplete = () => resolve({ engine: 'IndexedDB + LocalStorage', ok: true });
+      tx.onerror = () => resolve({ engine: 'LocalStorage', ok: true });
+    });
+  } catch (e) {
+    return { engine: 'LocalStorage / Memory', ok: true };
+  }
+};
+
+const loadStateOffline = async () => {
+  try {
+    const db = await openEcologyDB();
+    const idbData = await new Promise((resolve, reject) => {
+      const tx = db.transaction(STORE_NAME, 'readonly');
+      const store = tx.objectStore(STORE_NAME);
+      const req = store.get('root');
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+    if (idbData) return { data: idbData, engine: 'IndexedDB' };
+  } catch (e) {
+    // Fallback to localStorage
+  }
+  try {
+    const raw = window.localStorage.getItem(LS_KEY);
+    if (raw) {
+      return { data: JSON.parse(raw), engine: 'LocalStorage' };
+    }
+  } catch (e) {
+    // Fallback to default in-memory
+  }
+  return { data: null, engine: 'Memory-Init' };
+};
+
+// ============================================================================
+// 2. POE / MELVOR IDLE RARITY SYSTEM & AFFIX POOLS
+// ============================================================================
+const RARITY_TIERS = {
+  normal: {
+    id: 'normal',
+    label: '白・普通',
+    en: 'NORMAL',
+    probText: '60%',
+    colorHex: '#E5E7EB',
+    borderClass: 'border-zinc-400/50 hover:border-zinc-200',
+    bgClass: 'bg-zinc-900/90',
+    badgeClass: 'bg-zinc-200 text-zinc-950 font-bold',
+    textClass: 'text-zinc-100',
+    glowClass: 'shadow-[0_0_12px_rgba(229,231,235,0.12)]',
+    beamColor: 'from-zinc-200/40 via-zinc-300/10 to-transparent',
+    dustValue: 5,
+    expValue: 15
+  },
+  magic: {
+    id: 'magic',
+    label: '藍・魔法',
+    en: 'MAGIC',
+    probText: '25%',
+    colorHex: '#38BDF8',
+    borderClass: 'border-sky-400/70 hover:border-sky-300',
+    bgClass: 'bg-gradient-to-br from-sky-950/45 via-zinc-900/95 to-zinc-950',
+    badgeClass: 'bg-sky-400 text-slate-950 font-bold',
+    textClass: 'text-sky-300',
+    glowClass: 'shadow-[0_0_18px_rgba(56,189,248,0.25)]',
+    beamColor: 'from-sky-400/60 via-sky-500/20 to-transparent',
+    dustValue: 15,
+    expValue: 35
+  },
+  rare: {
+    id: 'rare',
+    label: '黃・稀有',
+    en: 'RARE',
+    probText: '10%',
+    colorHex: '#FACC15',
+    borderClass: 'border-yellow-400/80 hover:border-yellow-300',
+    bgClass: 'bg-gradient-to-br from-yellow-950/45 via-zinc-900/95 to-zinc-950',
+    badgeClass: 'bg-yellow-400 text-zinc-950 font-extrabold',
+    textClass: 'text-yellow-300',
+    glowClass: 'shadow-[0_0_22px_rgba(250,204,21,0.32)]',
+    beamColor: 'from-yellow-300/75 via-yellow-500/25 to-transparent',
+    dustValue: 40,
+    expValue: 80
+  },
+  unique: {
+    id: 'unique',
+    label: '橘・傳奇',
+    en: 'UNIQUE',
+    probText: '5%',
+    colorHex: '#F97316',
+    borderClass: 'border-orange-500 hover:border-orange-400',
+    bgClass: 'bg-gradient-to-br from-orange-950/60 via-zinc-900/95 to-zinc-950',
+    badgeClass: 'bg-gradient-to-r from-orange-500 to-amber-400 text-zinc-950 font-black',
+    textClass: 'text-orange-400',
+    glowClass: 'shadow-[0_0_28px_rgba(249,115,22,0.45)]',
+    beamColor: 'from-orange-500/90 via-amber-500/35 to-transparent',
+    dustValue: 120,
+    expValue: 200
+  }
+};
+
+const CATEGORIES = [
+  { id: 'tattoo', label: '刺青手稿構想', code: 'INK_FLASH', icon: Feather, accent: 'text-emerald-400' },
+  { id: 'rap', label: '饒舌歌詞', code: 'BARS_FLOW', icon: Mic, accent: 'text-purple-400' },
+  { id: 'podcast', label: 'Podcast 題材', code: 'ON_AIR', icon: Radio, accent: 'text-cyan-400' }
+];
+
+const POE_PREFIXES = [
+  '深淵低頻之',
+  '街頭霓虹之',
+  '賽博鍊金之',
+  '零度邊界之',
+  '混沌覺醒之',
+  '午夜漫遊之',
+  '高維突觸之',
+  '反叛靈魂之'
+];
+
+const POE_AFFIXES_BY_RARITY = {
+  normal: [
+    '+12% 基礎直覺清晰度',
+    '+8 點日常創作穩定度',
+    '減少 10% 雜訊干擾消耗'
+  ],
+  magic: [
+    '+24% 街頭敘事穿透力 · 獲得靈巧狀態',
+    '+18% 韻腳與線條連擊率 · 附加冷靜思維',
+    '恢復 6% 情緒算力 (MP) · 免疫輕微焦慮'
+  ],
+  rare: [
+    '+42% 靈感暴擊傷害 · 擊碎他人課題時獲得猛攻 · +15 全能力抗性',
+    '+38% 深夜創作流暢度 · 穿透 20% 世俗框架 · 每秒回復 1.8 認知護盾',
+    '+45% 視覺與聽覺張力 · 觸發心流時額外掉落雙倍星塵'
+  ],
+  unique: [
+    '【傳奇暗金詞綴】你的靈感無視常規冷卻時間 · 每次輸出時 100% 轉化內耗為純粹創作星火 · 「唯有守住邊界者，方能鑄造神話。」',
+    '【傳奇暗金詞綴】雙軌算力低於 30% 時，靈感暴擊率提升至 100% · 自動反彈一切情緒勒索傷害 · 「在廢墟與霓虹之間，我即生態。」'
+  ]
+};
+
+// Strictly follows 60% White, 25% Blue, 10% Yellow, 5% Orange
+const rollRarity = () => {
+  const rand = Math.random();
+  if (rand < 0.60) return 'normal';
+  if (rand < 0.85) return 'magic';
+  if (rand < 0.95) return 'rare';
+  return 'unique';
+};
+
+const generateItemAffix = (rarity) => {
+  const prefix = POE_PREFIXES[Math.floor(Math.random() * POE_PREFIXES.length)];
+  const pool = POE_AFFIXES_BY_RARITY[rarity] || POE_AFFIXES_BY_RARITY.normal;
+  const affix = pool[Math.floor(Math.random() * pool.length)];
+  return { prefix, affix };
+};
+
+const INITIAL_LOOT_ITEMS = [
+  {
+    id: 'loot-init-1',
+    category: 'tattoo',
+    content: '機械脊椎纏繞枯山水松枝，在第三節頸椎處鑲嵌一枚破碎的混沌石，象徵理性算力與有機生命的共生。',
+    rarity: 'unique',
+    prefix: '混沌覺醒之',
+    affix: POE_AFFIXES_BY_RARITY.unique[0],
+    createdAt: '2026-10-18 20:15',
+    pinned: true
+  },
+  {
+    id: 'loot-init-2',
+    category: 'rap',
+    content: '「把別人的課題當垃圾郵件粉碎 / 我的算力只留給深夜的韻腳與純粹 / 紅線閃爍開啟大爺模式不奉陪」',
+    rarity: 'rare',
+    prefix: '零度邊界之',
+    affix: POE_AFFIXES_BY_RARITY.rare[0],
+    createdAt: '2026-10-18 21:04',
+    pinned: true
+  },
+  {
+    id: 'loot-init-3',
+    category: 'podcast',
+    content: 'EP.14 企劃：為什麼現代創作者需要「情緒防火牆」？從阿德勒課題分離聊到 RPG 遊戲的魔力值管理。',
+    rarity: 'magic',
+    prefix: '高維突觸之',
+    affix: POE_AFFIXES_BY_RARITY.magic[1],
+    createdAt: '2026-10-18 21:40',
+    pinned: false
+  },
+  {
+    id: 'loot-init-4',
+    category: 'tattoo',
+    content: '極簡粗黑線條 (Blackwork) 手腕內側電量刻度：30% 警戒線標註「IDLE MODE ONLY」。',
+    rarity: 'normal',
+    prefix: '街頭霓虹之',
+    affix: POE_AFFIXES_BY_RARITY.normal[0],
+    createdAt: '2026-10-18 22:10',
+    pinned: false
+  }
+];
+
+const INITIAL_SELF_TASKS = [
+  {
+    id: 'self-1',
+    text: '昨晚熬夜剪輯導致今天肉體 HP 偏低，今晚 23:30 前必須強制斷網進入休眠。',
+    createdAt: '20:30',
+    resolved: false
+  },
+  {
+    id: 'self-2',
+    text: '對新單曲混音細節感到焦慮 —— 屬於自我技術課題，拆解為明天下午 40 分鐘專注修正低頻。',
+    createdAt: '21:15',
+    resolved: true
+  }
+];
+
+const BOUNDARY_PRESETS = [
+  '親戚或旁人對我生活作息與職涯選擇的指手畫腳',
+  '客戶在非工作時間傳來情緒化且無明確需求的語音轟炸',
+  '社群媒體上陌生人的酸言酸語與無意義比較焦慮',
+  '朋友把自己的感情爛攤子強行丟給我要求選邊站'
+];
+
+const SAMPLE_INSPIRATIONS = {
+  tattoo: [
+    '賽博龐克風格沙漏：上半部是幾何多邊形大腦，下半部流落出像素化的蓮花與暗金符文。',
+    'Old School 燕子銜著一張寫有「404 EMOTION NOT FOUND」的復古磁片，搭配高反差黑灰網點。',
+    '前臂內側單針細線：聲波圖形與老式合成器旋鈕結合，刻度停在「FLOW STATE」。'
+  ],
+  rap: [
+    '「他們忙著在別人的劇本裡搶戲 / 我在 #121212 的暗房裡鍛造傳奇 / 掉落率百分之五的橘光刺穿夜裡」',
+    '「HP 低於三十就拉下鐵門 / 不回訊息不是冷漠是保護靈魂 / 算力留給 Beat 讓低頻震碎灰塵」',
+    '「情緒過濾器一開，廢話全部粉碎成奈米 / 我的背包只裝得下純金的 Verse 跟真理」'
+  ],
+  podcast: [
+    '單集靈感：《像玩流亡黯道一樣經營人生》—— 把每次挫折當成洗詞綴，如何建立多巴胺正向迴圈？',
+    '單集靈感：《大爺模式宣言》—— 當雙軌算力見底時，如何優雅且堅定地拒絕無效社交？',
+    '單集靈感：《刺青、饒舌與冥想》—— 高強度街頭文化背後的心靈減壓與內在秩序建立。'
+  ]
+};
+
+// ============================================================================
+// 3. WEB AUDIO SYNTHESIZER (Cyberpunk & ARPG Dopamine SFX)
+// ============================================================================
+const createSoundEngine = () => {
+  let ctx = null;
+  const getCtx = () => {
+    if (typeof window === 'undefined') return null;
+    if (!ctx) {
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      if (AudioCtx) ctx = new AudioCtx();
+    }
+    if (ctx && ctx.state === 'suspended') {
+      ctx.resume().catch(() => {});
+    }
+    return ctx;
+  };
+
+  return {
+    play(type, enabled = true) {
+      if (!enabled) return;
+      const audio = getCtx();
+      if (!audio) return;
+      const now = audio.currentTime;
+
+      try {
+        if (type === 'shatter') {
+          // Laser slash + glass/stone shatter crunch
+          const osc = audio.createOscillator();
+          const gain = audio.createGain();
+          osc.type = 'sawtooth';
+          osc.frequency.setValueAtTime(520, now);
+          osc.frequency.exponentialRampToValueAtTime(55, now + 0.28);
+          gain.gain.setValueAtTime(0.18, now);
+          gain.gain.exponentialRampToValueAtTime(0.001, now + 0.3);
+          osc.connect(gain);
+          gain.connect(audio.destination);
+          osc.start(now);
+          osc.stop(now + 0.3);
+
+          // High metallic bursts
+          [0.06, 0.12, 0.18].forEach((offset, idx) => {
+            const pOsc = audio.createOscillator();
+            const pGain = audio.createGain();
+            pOsc.type = 'triangle';
+            pOsc.frequency.setValueAtTime(900 - idx * 180, now + offset);
+            pOsc.frequency.exponentialRampToValueAtTime(180, now + offset + 0.09);
+            pGain.gain.setValueAtTime(0.1, now + offset);
+            pGain.gain.exponentialRampToValueAtTime(0.001, now + offset + 0.09);
+            pOsc.connect(pGain);
+            pGain.connect(audio.destination);
+            pOsc.start(now + offset);
+            pOsc.stop(now + offset + 0.09);
+          });
+        } else if (type === 'absorb') {
+          const osc = audio.createOscillator();
+          const gain = audio.createGain();
+          osc.type = 'sine';
+          osc.frequency.setValueAtTime(330, now);
+          osc.frequency.exponentialRampToValueAtTime(528, now + 0.22);
+          gain.gain.setValueAtTime(0.12, now);
+          gain.gain.exponentialRampToValueAtTime(0.001, now + 0.25);
+          osc.connect(gain);
+          gain.connect(audio.destination);
+          osc.start(now);
+          osc.stop(now + 0.25);
+        } else if (type === 'normal' || type === 'magic' || type === 'rare' || type === 'unique') {
+          const chords = {
+            normal: [440, 554.37],
+            magic: [523.25, 659.25, 783.99],
+            rare: [587.33, 739.99, 880, 1174.66],
+            unique: [392.0, 587.33, 783.99, 1046.5, 1318.5]
+          };
+          const notes = chords[type] || chords.normal;
+          notes.forEach((freq, i) => {
+            const osc = audio.createOscillator();
+            const gain = audio.createGain();
+            osc.type = type === 'unique' ? 'triangle' : 'sine';
+            const start = now + i * 0.055;
+            const duration = type === 'unique' ? 0.65 : 0.32;
+            osc.frequency.setValueAtTime(freq, start);
+            gain.gain.setValueAtTime(type === 'unique' ? 0.16 : 0.11, start);
+            gain.gain.exponentialRampToValueAtTime(0.001, start + duration);
+            osc.connect(gain);
+            gain.connect(audio.destination);
+            osc.start(start);
+            osc.stop(start + duration);
+          });
+        } else if (type === 'sleep') {
+          [261.63, 329.63, 392.0, 493.88].forEach((freq, i) => {
+            const osc = audio.createOscillator();
+            const gain = audio.createGain();
+            osc.type = 'sine';
+            const start = now + i * 0.09;
+            osc.frequency.setValueAtTime(freq, start);
+            gain.gain.setValueAtTime(0.1, start);
+            gain.gain.exponentialRampToValueAtTime(0.001, start + 0.8);
+            osc.connect(gain);
+            gain.connect(audio.destination);
+            osc.start(start);
+            osc.stop(start + 0.8);
+          });
+        }
+      } catch (e) {
+        // Ignore audio context errors
+      }
+    }
+  };
+};
+
+// ============================================================================
+// 4. PHILOSOPHICAL RECOVERY QUOTES GENERATOR (Module 4 Logic)
+// ============================================================================
+const generateRecoveryPhilosophy = ({ inspirationCount, shatteredCount, absorbedCount, hp, mp, uniqueCount }) => {
+  if (shatteredCount >= 3 && inspirationCount >= 3) {
+    return {
+      title: '【雙重覺醒・邊界與創生之夜】',
+      quote: '「你今日揮刀斬斷了外在的虛妄雜訊，又在寂靜的暗房裡鍛造出高純度的靈魂結晶。真正的強者不是承載一切的容器，而是懂得過濾雜質的鍊金爐。」',
+      sub: '史詩級結算：高頻情緒防禦 + 豐沛靈感掉落。建議今晚彻底放空感官，讓潛意識自動重組突觸。',
+      rank: 'S+ // 傳奇鍊金師'
+    };
+  }
+  if (shatteredCount >= 2) {
+    return {
+      title: '【鐵壁邊界・課題分離大師】',
+      quote: '「每一次按下『他人課題』的粉碎鍵，都是對自我主權的一次莊嚴宣誓。別人的風暴不該弄濕你的羽翼；你守住的留白，正是明日自由的領地。」',
+      sub: `今日成功攔截並粉碎了 ${shatteredCount} 次外部情緒入侵，你的認知護盾完好無損。`,
+      rank: 'A+ // 邊界守門人'
+    };
+  }
+  if (inspirationCount >= 3 || uniqueCount >= 1) {
+    return {
+      title: '【暗金湧現・靈感豐收之夜】',
+      quote: '「創作是靈魂在混沌中投下的錨。今天掉落的每一枚靈感碎片，都是你與宇宙低頻共振的證據。收起工具吧，最深邃的韻腳與線條會在夢境中繼續發酵。」',
+      sub: `今日背包共收穫 ${inspirationCount} 件靈感戰利品${uniqueCount > 0 ? `（含 ${uniqueCount} 件傳奇橘裝！）` : ''}。`,
+      rank: 'A+ // 街頭造夢者'
+    };
+  }
+  if (hp < 30 || mp < 30) {
+    return {
+      title: '【低電量保護・大爺模式的慈悲】',
+      quote: '「承認算力見底，本身就是最高級別的自我覺察。植物不會在寒冬強迫自己開花，你也不必在低谷時向世界證明產出。今晚，呼吸就是你唯一的KPI。」',
+      sub: '系統偵測到你的 HP/MP 處於紅區警戒，休眠確認後將為你強制回滿雙軌能量。',
+      rank: 'B // 靜默修復者'
+    };
+  }
+  return {
+    title: '【平穩巡航・日常秩序的微光】',
+    quote: '「沒有驚濤駭浪的日子，正是內在生態圈默默紮根的時刻。你傾聽了自己的課題，維持了穩定的能量水位——平靜本身，就是一種稀有的傳奇裝備。」',
+    sub: `今日記錄了 ${inspirationCount} 則靈感、粉碎 ${shatteredCount} 次外在雜訊、消化 ${absorbedCount} 件自我課題。`,
+    rank: 'A // 穩定漫遊者'
+  };
+};
+
+// ============================================================================
+// 5. ARCHITECTURE & COMPONENT CODE REFERENCE DATA (For In-App Blueprint Tab)
+// ============================================================================
+const PWA_FILE_TREE = `cognitive-ecology-pwa/
+├── public/
+│   ├── manifest.json          # PWA 安裝描述檔 (standalone / #121212 深色主題)
+│   ├── sw.js                  # Service Worker 離線快取核心 (Cache-First)
+│   └── icons/
+│       ├── icon-192x192.png   # 手機主畫面 App 圖示
+│       └── icon-512x512.png   # 啟動畫面 (Splash Screen) 高解析圖示
+├── src/
+│   ├── db/
+│   │   └── indexedDB.js       # IndexedDB + LocalStorage 雙層離線優先存儲引擎
+│   ├── utils/
+│   │   ├── lootEngine.js      # Math.random() 60/25/10/5% 掉落率與 PoE 詞綴生成
+│   │   └── soundEngine.js     # Web Audio API 合成打寶音效與粉碎音效
+│   ├── components/
+│   │   ├── EnergyRadar.jsx    # 模組一：雙軌算力雷達 (HP/MP 滑桿 + <30% 大爺模式警報)
+│   │   ├── BoundaryFilter.jsx # 模組二：情緒過濾器 (課題分離 + 粒子粉碎動畫)
+│   │   ├── InspirationLoot.jsx# 模組三：靈感掉落背包 (刺青/饒舌/Podcast + 四色裝備卡)
+│   │   └── DailyRecovery.jsx  # 模組四：每日修復結算 (休眠儀式 + 哲學語錄結算艙)
+│   ├── App.jsx                # 頂層狀態整合、Melvor 放置挖礦迴圈與 RWD 導覽列
+│   └── main.jsx               # React 掛載與 Service Worker 註冊入口
+├── index.html                 # Apple/Android PWA Meta 標籤與街頭極簡字體載入
+└── tailwind.config.js         # #121212 底色、裝備稀有度色票與自訂閃爍動畫`;
+
+const CODE_SNIPPETS = {
+  manifest: `{
+  "name": "認知生態圈 Cognitive Ecology",
+  "short_name": "認知生態圈",
+  "description": "量化內在能量、管理情緒邊界、收集創作靈感的街頭賽博龐克放置型 PWA",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#121212",
+  "theme_color": "#121212",
+  "icons": [
+    { "src": "./icons/icon-192x192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "./icons/icon-512x512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}`,
+  sw: `const CACHE_NAME = 'cognitive-ecology-v1';
+const ASSETS = ['./', './index.html', './manifest.json', './icons/icon-192x192.png'];
+
+self.addEventListener('install', (event) => {
+  event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(ASSETS)));
+  self.skipWaiting();
+});
+
+self.addEventListener('activate', (event) => {
+  event.waitUntil(
+    caches.keys().then((keys) =>
+      Promise.all(keys.filter((k) => k !== CACHE_NAME).map((k) => caches.delete(k)))
+    )
+  );
+  self.clients.claim();
+});
+
+self.addEventListener('fetch', (event) => {
+  event.respondWith(
+    caches.match(event.request).then((cached) => cached || fetch(event.request))
+  );
+});`,
+  lootRoll: `// 嚴格對應 Path of Exile / Melvor Idle 稀有度權重 (60% 白 / 25% 藍 / 10% 黃 / 5% 橘)
+export function rollInspirationRarity() {
+  const r = Math.random();
+  if (r < 0.60) return { tier: 'normal', label: '白・普通', color: '#E5E7EB' };
+  if (r < 0.85) return { tier: 'magic',  label: '藍・魔法', color: '#38BDF8' };
+  if (r < 0.95) return { tier: 'rare',   label: '黃・稀有', color: '#FACC15' };
+  return { tier: 'unique', label: '橘・傳奇', color: '#F97316' };
+}`
+};
+
+// ============================================================================
+// 6. MAIN APPLICATION COMPONENT
+// ============================================================================
+export default function App() {
+  // Core Module 1 State: HP & MP (0-100) + Boss Mode
+  const [hp, setHp] = useState(68);
+  const [mp, setMp] = useState(26); // Default <30% so user immediately experiences the flashing alert & can adjust slider!
+  const [bossMode, setBossMode] = useState(false);
+
+  // Core Module 2 State: Boundary Filter
+  const [stressInput, setStressInput] = useState('');
+  const [shatterStage, setShatterStage] = useState('idle'); // 'idle' | 'slashing' | 'exploding'
+  const [shatterText, setShatterText] = useState('');
+  const [shatterParticles, setShatterParticles] = useState([]);
+  const [shatteredCount, setShatteredCount] = useState(3);
+  const [selfTasks, setSelfTasks] = useState(INITIAL_SELF_TASKS);
+
+  // Core Module 3 State: Inspiration Loot
+  const [selectedCategory, setSelectedCategory] = useState('tattoo');
+  const [inspirationInput, setInspirationInput] = useState('');
+  const [lootItems, setLootItems] = useState(INITIAL_LOOT_ITEMS);
+  const [filterCategory, setFilterCategory] = useState('all');
+  const [filterRarity, setFilterRarity] = useState('all');
+  const [latestDrop, setLatestDrop] = useState(null);
+
+  // Core Module 4 State: Daily Recovery & History
+  const [showRecoveryModal, setShowRecoveryModal] = useState(false);
+  const [sleepLogs, setSleepLogs] = useState([
+    {
+      id: 'log-prev-1',
+      date: '2026-10-17 23:42',
+      inspirations: 4,
+      shattered: 2,
+      rank: 'A+ // 邊界守門人',
+      quote: '「守住邊界的人，才能在黑夜裡聽見自己真正的聲音。」'
+    }
+  ]);
+
+  // Melvor Idle / PoE Meta-Progression State
+  const [cognitiveDust, setCognitiveDust] = useState(145);
+  const [exp, setExp] = useState(340);
+  const [idleProgress, setIdleProgress] = useState(0);
+  const [soundEnabled, setSoundEnabled] = useState(true);
+  const [activeTab, setActiveTab] = useState('dashboard'); // 'dashboard' | 'vault' | 'blueprint'
+  const [storageEngine, setStorageEngine] = useState('IndexedDB');
+  const [lastSynced, setLastSynced] = useState('剛剛');
+  const [toast, setToast] = useState(null);
+  const [copiedId, setCopiedId] = useState(null);
+
+  const soundRef = useRef(null);
+  if (!soundRef.current) {
+    soundRef.current = createSoundEngine();
+  }
+
+  const showToast = (msg, tone = 'cyan') => {
+    setToast({ msg, tone, id: Date.now() });
+  };
+
+  useEffect(() => {
+    if (!toast) return;
+    const t = setTimeout(() => setToast(null), 3200);
+    return () => clearTimeout(t);
+  }, [toast]);
+
+  // Load initial state from IndexedDB / LocalStorage on mount
+  const isHydratedRef = useRef(false);
+  useEffect(() => {
+    let mounted = true;
+    loadStateOffline().then(({ data, engine }) => {
+      if (!mounted) return;
+      setStorageEngine(engine);
+      if (data) {
+        if (typeof data.hp === 'number') setHp(data.hp);
+        if (typeof data.mp === 'number') setMp(data.mp);
+        if (typeof data.bossMode === 'boolean') setBossMode(data.bossMode);
+        if (typeof data.shatteredCount === 'number') setShatteredCount(data.shatteredCount);
+        if (Array.isArray(data.selfTasks)) setSelfTasks(data.selfTasks);
+        if (Array.isArray(data.lootItems)) setLootItems(data.lootItems);
+        if (Array.isArray(data.sleepLogs)) setSleepLogs(data.sleepLogs);
+        if (typeof data.cognitiveDust === 'number') setCognitiveDust(data.cognitiveDust);
+        if (typeof data.exp === 'number') setExp(data.exp);
+      }
+      isHydratedRef.current = true;
+    });
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  // Save state to IndexedDB + LocalStorage whenever core data changes
+  useEffect(() => {
+    if (!isHydratedRef.current) return;
+    const payload = {
+      hp,
+      mp,
+      bossMode,
+      shatteredCount,
+      selfTasks,
+      lootItems,
+      sleepLogs,
+      cognitiveDust,
+      exp,
+      updatedAt: new Date().toISOString()
+    };
+    saveStateOffline(payload).then((res) => {
+      setStorageEngine(res.engine);
+      const now = new Date();
+      setLastSynced(
+        `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`
+      );
+    });
+  }, [hp, mp, bossMode, shatteredCount, selfTasks, lootItems, sleepLogs, cognitiveDust, exp]);
+
+  // Melvor Idle Background Cognitive Mining Tick
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setIdleProgress((prev) => {
+        if (prev >= 100) {
+          setCognitiveDust((d) => d + (bossMode ? 4 : 2));
+          setExp((x) => x + (bossMode ? 8 : 5));
+          if (bossMode) {
+            setMp((m) => Math.min(100, m + 1));
+          }
+          return 0;
+        }
+        return prev + 20;
+      });
+    }, 600);
+    return () => clearInterval(interval);
+  }, [bossMode]);
+
+  // Derived Level & Low-Energy Warning
+  const level = Math.floor(exp / 100) + 1;
+  const expInLevel = exp % 100;
+  const isLowEnergy = hp < 30 || mp < 30;
+
+  // ============================================================================
+  // HANDLERS: MODULE 2 (BOUNDARY FILTER)
+  // ============================================================================
+  const handleInternalAbsorb = () => {
+    const trimmed = stressInput.trim();
+    if (!trimmed || shatterStage !== 'idle') {
+      showToast('請先輸入需要過濾的情緒或壓力事件', 'amber');
+      return;
+    }
+    soundRef.current.play('absorb', soundEnabled);
+    const now = new Date();
+    const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+    const newTask = {
+      id: `self-${Date.now()}`,
+      text: trimmed,
+      createdAt: timeStr,
+      resolved: false
+    };
+    setSelfTasks((prev) => [newTask, ...prev]);
+    setStressInput('');
+    setExp((x) => x + 15);
+    setCognitiveDust((d) => d + 5);
+    showToast('已納入「自我課題」內部精煉槽 (+15 EXP / +5 星塵)', 'emerald');
+  };
+
+  const handleExternalShatter = () => {
+    const trimmed = stressInput.trim();
+    if (!trimmed || shatterStage !== 'idle') {
+      showToast('請先輸入要阻擋粉碎的「他人課題」或壓力事件', 'amber');
+      return;
+    }
+    soundRef.current.play('shatter', soundEnabled);
+    setShatterText(trimmed);
+    setShatterStage('slashing');
+
+    // Generate 20 high-velocity cyberpunk shard particles
+    const chars = trimmed.split('');
+    const count = Math.min(24, Math.max(14, chars.length));
+    const particles = Array.from({ length: count }, (_, idx) => {
+      const angle = (Math.PI * 2 * idx) / count + (Math.random() - 0.5) * 0.5;
+      const dist = 60 + Math.random() * 130;
+      return {
+        id: idx,
+        char: chars[idx % chars.length] || '█',
+        dx: Math.cos(angle) * dist,
+        dy: Math.sin(angle) * dist - 25,
+        rot: (Math.random() - 0.5) * 540,
+        color: idx % 3 === 0 ? '#EF4444' : idx % 3 === 1 ? '#F97316' : '#38BDF8'
+      };
+    });
+    setShatterParticles(particles);
+
+    setTimeout(() => {
+      setShatterStage('exploding');
+    }, 340);
+
+    setTimeout(() => {
+      setShatterStage('idle');
+      setShatterText('');
+      setStressInput('');
+      setShatterParticles([]);
+      setShatteredCount((c) => c + 1);
+      setExp((x) => x + 25);
+      setCognitiveDust((d) => d + 10);
+      setMp((m) => Math.min(100, m + 4));
+      showToast('他人課題已徹底粉碎！邊界護盾強化 (+25 EXP / +4% MP)', 'rose');
+    }, 980);
+  };
+
+  const toggleSelfTask = (id) => {
+    setSelfTasks((prev) =>
+      prev.map((item) => (item.id === id ? { ...item, resolved: !item.resolved } : item))
+    );
+  };
+
+  const removeSelfTask = (id) => {
+    setSelfTasks((prev) => prev.filter((item) => item.id !== id));
+  };
+
+  // ============================================================================
+  // HANDLERS: MODULE 3 (INSPIRATION LOOT)
+  // ============================================================================
+  const handleDropInspiration = (e) => {
+    if (e) e.preventDefault();
+    const trimmed = inspirationInput.trim();
+    if (!trimmed) {
+      showToast('請先輸入你的刺青手稿、饒舌歌詞或 Podcast 靈感！', 'amber');
+      return;
+    }
+
+    const rarityKey = rollRarity();
+    const tier = RARITY_TIERS[rarityKey];
+    const { prefix, affix } = generateItemAffix(rarityKey);
+    const now = new Date();
+    const timeStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(
+      now.getDate()
+    ).padStart(2, '0')} ${String(now.getHours()).padStart(2, '0')}:${String(
+      now.getMinutes()
+    ).padStart(2, '0')}`;
+
+    const newItem = {
+      id: `loot-${Date.now()}`,
+      category: selectedCategory,
+      content: trimmed,
+      rarity: rarityKey,
+      prefix,
+      affix,
+      createdAt: timeStr,
+      pinned: rarityKey === 'unique' || rarityKey === 'rare'
+    };
+
+    soundRef.current.play(rarityKey, soundEnabled);
+    setLootItems((prev) => [newItem, ...prev]);
+    setInspirationInput('');
+    setLatestDrop(newItem);
+    setCognitiveDust((d) => d + tier.dustValue);
+    setExp((x) => x + tier.expValue);
+
+    showToast(
+      `掉落鑑定：【${tier.label}】${prefix}靈感結晶 (+${tier.expValue} EXP / +${tier.dustValue} 星塵)`,
+      rarityKey === 'unique' ? 'orange' : rarityKey === 'rare' ? 'amber' : 'cyan'
+    );
+  };
+
+  const handleFillRandomInspiration = () => {
+    const pool = SAMPLE_INSPIRATIONS[selectedCategory] || SAMPLE_INSPIRATIONS.tattoo;
+    const pick = pool[Math.floor(Math.random() * pool.length)];
+    setInspirationInput(pick);
+  };
+
+  const handleChaosReroll = (itemId) => {
+    if (cognitiveDust < 20) {
+      showToast('認知星塵不足 20 點，無法使用混沌石重鑄稀有度！', 'amber');
+      return;
+    }
+    const newRarity = rollRarity();
+    const tier = RARITY_TIERS[newRarity];
+    const { prefix, affix } = generateItemAffix(newRarity);
+    soundRef.current.play(newRarity, soundEnabled);
+    setCognitiveDust((d) => d - 20);
+    setLootItems((prev) =>
+      prev.map((item) =>
+        item.id === itemId
+          ? { ...item, rarity: newRarity, prefix, affix }
+          : item
+      )
+    );
+    showToast(`混沌石重鑄完成！裝備重洗為【${tier.label}】`, 'cyan');
+  };
+
+  const handleDisenchantLoot = (item) => {
+    const tier = RARITY_TIERS[item.rarity] || RARITY_TIERS.normal;
+    setLootItems((prev) => prev.filter((x) => x.id !== item.id));
+    setCognitiveDust((d) => d + tier.dustValue);
+    if (latestDrop && latestDrop.id === item.id) setLatestDrop(null);
+    showToast(`已分解靈感結晶，回收 +${tier.dustValue} 認知星塵`, 'cyan');
+  };
+
+  const handleTogglePin = (itemId) => {
+    setLootItems((prev) =>
+      prev.map((item) => (item.id === itemId ? { ...item, pinned: !item.pinned } : item))
+    );
+  };
+
+  const handleCopyText = (text, id) => {
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).catch(() => {});
+      } else {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+      }
+      setCopiedId(id);
+      setTimeout(() => setCopiedId(null), 1800);
+      showToast('已複製到剪貼簿', 'emerald');
+    } catch (e) {
+      showToast('複製完成', 'emerald');
+    }
+  };
+
+  // ============================================================================
+  // HANDLERS: MODULE 4 (DAILY RECOVERY HIBERNATION)
+  // ============================================================================
+  const openRecoveryModal = () => {
+    soundRef.current.play('sleep', soundEnabled);
+    setShowRecoveryModal(true);
+  };
+
+  const handleCompleteRecovery = () => {
+    const phil = generateRecoveryPhilosophy({
+      inspirationCount: lootItems.length,
+      shatteredCount,
+      absorbedCount: selfTasks.length,
+      hp,
+      mp,
+      uniqueCount: lootItems.filter((i) => i.rarity === 'unique').length
+    });
+    const now = new Date();
+    const dateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(
+      now.getDate()
+    ).padStart(2, '0')} ${String(now.getHours()).padStart(2, '0')}:${String(
+      now.getMinutes()
+    ).padStart(2, '0')}`;
+
+    const newLog = {
+      id: `sleep-${Date.now()}`,
+      date: dateStr,
+      inspirations: lootItems.length,
+      shattered: shatteredCount,
+      rank: phil.rank,
+      quote: phil.quote
+    };
+
+    setSleepLogs((prev) => [newLog, ...prev]);
+    setHp(100);
+    setMp(100);
+    setBossMode(false);
+    setExp((x) => x + 100);
+    setShowRecoveryModal(false);
+    showToast('休眠結算完成！HP 與 MP 已 100% 完整修復 (+100 EXP)', 'emerald');
+  };
+
+  const handleExportJSON = () => {
+    const payload = {
+      app: 'Cognitive Ecology PWA',
+      exportedAt: new Date().toISOString(),
+      hp,
+      mp,
+      shatteredCount,
+      cognitiveDust,
+      exp,
+      lootItems,
+      selfTasks,
+      sleepLogs
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `cognitive-ecology-backup-${Date.now()}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    showToast('已匯出離線備份 JSON 檔案', 'cyan');
+  };
+
+  // Filtered Loot List
+  const filteredLoot = useMemo(() => {
+    return lootItems.filter((item) => {
+      const catOk = filterCategory === 'all' || item.category === filterCategory;
+      const rarOk = filterRarity === 'all' || item.rarity === filterRarity;
+      return catOk && rarOk;
+    });
+  }, [lootItems, filterCategory, filterRarity]);
+
+  // Rarity counts
+  const rarityCounts = useMemo(() => {
+    return {
+      unique: lootItems.filter((i) => i.rarity === 'unique').length,
+      rare: lootItems.filter((i) => i.rarity === 'rare').length,
+      magic: lootItems.filter((i) => i.rarity === 'magic').length,
+      normal: lootItems.filter((i) => i.rarity === 'normal').length
+    };
+  }, [lootItems]);
+
+  const currentPhilosophy = useMemo(() => {
+    return generateRecoveryPhilosophy({
+      inspirationCount: lootItems.length,
+      shatteredCount,
+      absorbedCount: selfTasks.length,
+      hp,
+      mp,
+      uniqueCount: rarityCounts.unique
+    });
+  }, [lootItems.length, shatteredCount, selfTasks.length, hp, mp, rarityCounts.unique]);
+
+  return (
+    <div
+      style={{ backgroundColor: '#121212' }}
+      className={`min-h-screen text-zinc-100 font-sans pb-28 selection:bg-cyan-400 selection:text-zinc-950 transition-all duration-300 ${
+        isLowEnergy
+          ? 'ring-4 ring-inset ring-red-500/80 shadow-[inset_0_0_45px_rgba(239,68,68,0.28)]'
+          : ''
+      }`}
+    >
+      {/* CUSTOM CYBERPUNK & LOOT ANIMATION STYLES */}
+      <style>{`
+        @keyframes pulseWarningBorder {
+          0%, 100% { border-color: rgba(239, 68, 68, 0.95); box-shadow: 0 0 28px rgba(239, 68, 68, 0.55), inset 0 0 18px rgba(239, 68, 68, 0.25); }
+          50% { border-color: rgba(249, 115, 22, 0.35); box-shadow: 0 0 8px rgba(239, 68, 68, 0.15), inset 0 0 4px rgba(239, 68, 68, 0.05); }
+        }
+        .low-energy-radar-alert {
+          animation: pulseWarningBorder 1.35s infinite ease-in-out;
+        }
+        @keyframes slashStrike {
+          0% { width: 0%; opacity: 1; }
+          100% { width: 108%; opacity: 1; }
+        }
+        .laser-slash-line {
+          animation: slashStrike 0.28s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+        }
+        @keyframes glitchShake {
+          0%, 100% { transform: translate(0, 0) skew(0deg); }
+          20% { transform: translate(-4px, 2px) skew(-4deg); }
+          40% { transform: translate(4px, -2px) skew(4deg); }
+          60% { transform: translate(-3px, -1px) skew(-2deg); }
+          80% { transform: translate(3px, 2px) skew(3deg); }
+        }
+        .shatter-glitch {
+          animation: glitchShake 0.32s infinite;
+        }
+        @keyframes lootBeamRise {
+          0% { opacity: 0; transform: scaleY(0.2); }
+          40% { opacity: 1; transform: scaleY(1.05); }
+          100% { opacity: 0.75; transform: scaleY(1); }
+        }
+        .poe-loot-beam {
+          animation: lootBeamRise 0.6s ease-out forwards;
+        }
+      `}</style>
+
+      {/* FLOATING TOAST NOTIFICATION */}
+      {toast && (
+        <div className="fixed top-4 left-1/2 -translate-x-1/2 z-50 w-[92%] max-w-md pointer-events-none">
+          <div
+            className={`px-4 py-3 rounded-xl border backdrop-blur-md shadow-2xl flex items-center gap-3 text-xs sm:text-sm font-medium ${
+              toast.tone === 'rose'
+                ? 'bg-red-950/90 border-red-500 text-red-200'
+                : toast.tone === 'orange'
+                ? 'bg-orange-950/95 border-orange-400 text-orange-200'
+                : toast.tone === 'amber'
+                ? 'bg-amber-950/90 border-amber-400 text-amber-200'
+                : toast.tone === 'emerald'
+                ? 'bg-emerald-950/90 border-emerald-400 text-emerald-200'
+                : 'bg-zinc-900/95 border-cyan-400 text-cyan-200'
+            }`}
+          >
+            <Sparkles className="w-4 h-4 shrink-0" />
+            <span className="truncate">{toast.msg}</span>
+          </div>
+        </div>
+      )}
+
+      {/* TOP CYBERPUNK HUD BAR */}
+      <header className="sticky top-0 z-30 border-b border-zinc-800/90 bg-[#121212]/90 backdrop-blur-md">
+        <div className="max-w-4xl mx-auto px-4 py-3">
+          <div className="flex items-center justify-between gap-3">
+            {/* Emblem + App Title */}
+            <div className="flex items-center gap-3 min-w-0">
+              <div className="relative w-11 h-11 rounded-xl overflow-hidden border border-cyan-500/50 shadow-[0_0_15px_rgba(56,189,248,0.25)] shrink-0 bg-zinc-900">
+                <img
+                  src="data:image/jpeg;base64,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"
+                  alt="Cognitive Ecology Emblem"
+                  className="w-full h-full object-cover max-w-full h-auto"
+                />
+                <span className="absolute bottom-0.5 right-0.5 w-2.5 h-2.5 rounded-full bg-emerald-400 ring-2 ring-zinc-950" />
+              </div>
+              <div className="min-w-0">
+                <div className="flex items-center gap-2">
+                  <h1 className="text-base sm:text-lg font-black tracking-wider text-zinc-100 truncate">
+                    認知生態圈
+                  </h1>
+                  <span className="text-[10px] font-mono uppercase px-1.5 py-0.5 rounded bg-cyan-500/15 text-cyan-300 border border-cyan-500/30">
+                    LV.{level}
+                  </span>
+                </div>
+                <p className="text-[11px] font-mono text-zinc-400 truncate">
+                  COGNITIVE_ECOLOGY // {storageEngine} ({lastSynced})
+                </p>
+              </div>
+            </div>
+
+            {/* Right Controls: Dust Counter, Boss Shield, Audio Mute */}
+            <div className="flex items-center gap-2 shrink-0">
+              <div
+                title="認知星塵 (可用於重鑄靈感稀有度)"
+                className="px-2.5 py-1.5 rounded-lg bg-zinc-900 border border-amber-500/40 flex items-center gap-1.5"
+              >
+                <Sparkles className="w-3.5 h-3.5 text-amber-400" />
+                <span className="text-xs font-mono font-bold text-amber-300">{cognitiveDust}</span>
+                <span className="hidden sm:inline text-[10px] text-zinc-400">星塵</span>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setBossMode((b) => !b);
+                  showToast(
+                    !bossMode
+                      ? '已開啟「大爺護盾模式」：謝絕高耗能社交，背景自動回魔中'
+                      : '已解除大爺護盾模式，恢復常規連接',
+                    !bossMode ? 'amber' : 'cyan'
+                  );
+                }}
+                className={`px-2.5 py-1.5 rounded-lg border text-xs font-mono font-bold flex items-center gap-1 transition-all ${
+                  bossMode
+                    ? 'bg-amber-500 text-zinc-950 border-amber-300 shadow-[0_0_15px_rgba(245,158,11,0.5)]'
+                    : 'bg-zinc-900 text-zinc-300 border-zinc-700 hover:border-zinc-500'
+                }`}
+              >
+                {bossMode ? <Lock className="w-3.5 h-3.5" /> : <Unlock className="w-3.5 h-3.5" />}
+                <span className="hidden sm:inline">{bossMode ? '大爺模式 ON' : '大爺模式'}</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setSoundEnabled((s) => !s)}
+                aria-label="切換音效"
+                className="p-2 rounded-lg bg-zinc-900 border border-zinc-700 text-zinc-300 hover:text-cyan-300 hover:border-cyan-500/50 transition-colors"
+              >
+                {soundEnabled ? <Volume2 className="w-4 h-4 text-cyan-400" /> : <VolumeX className="w-4 h-4 text-zinc-500" />}
+              </button>
+            </div>
+          </div>
+
+          {/* Melvor Idle Style Passive Cognitive Mining Strip */}
+          <div className="mt-2.5 flex items-center gap-3">
+            <div className="flex items-center gap-1.5 text-[10px] font-mono text-zinc-400 shrink-0">
+              <Zap className="w-3 h-3 text-cyan-400 animate-pulse" />
+              <span>IDLE_MINING</span>
+            </div>
+            <div className="flex-1 h-1.5 bg-zinc-800 rounded-full overflow-hidden">
+              <div
+                className="h-full bg-gradient-to-r from-cyan-500 via-sky-400 to-amber-400 transition-all duration-500"
+                style={{ width: `${idleProgress}%` }}
+              />
+            </div>
+            <div className="text-[10px] font-mono text-zinc-400 shrink-0">
+              EXP {expInLevel}/100
+            </div>
+          </div>
+        </div>
+      </header>
+
+      {/* MAIN CONTENT CONTAINER */}
+      <main className="max-w-4xl mx-auto px-4 pt-5 space-y-6">
+        {activeTab === 'dashboard' && (
+          <>
+            {/* ================================================================
+                MODULE 1: 雙軌算力雷達 (Energy & Bandwidth)
+               ================================================================ */}
+            <section
+              id="module-energy-radar"
+              className={`rounded-2xl p-4 sm:p-6 bg-zinc-900/90 border-2 transition-all duration-300 ${
+                isLowEnergy
+                  ? 'low-energy-radar-alert border-red-500'
+                  : bossMode
+                  ? 'border-amber-500/70 shadow-[0_0_24px_rgba(245,158,11,0.18)]'
+                  : 'border-zinc-800/90 shadow-xl'
+              }`}
+            >
+              <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
+                <div className="flex items-center gap-2.5">
+                  <div
+                    className={`p-2 rounded-lg border ${
+                      isLowEnergy
+                        ? 'bg-red-500/20 border-red-500 text-red-400'
+                        : 'bg-cyan-500/10 border-cyan-500/30 text-cyan-400'
+                    }`}
+                  >
+                    <Activity className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-[10px] font-mono uppercase tracking-widest text-zinc-400">
+                        MODULE_01 // DUAL-TRACK RADAR
+                      </span>
+                      {bossMode && (
+                        <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40">
+                          SHIELD_ACTIVE
+                        </span>
+                      )}
+                    </div>
+                    <h2 className="text-lg sm:text-xl font-black tracking-tight text-zinc-100">
+                      雙軌算力雷達 (Energy & Bandwidth)
+                    </h2>
+                  </div>
+                </div>
+
+                {/* Quick Presets for testing <30% vs Full */}
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setHp(22);
+                      setMp(18);
+                      showToast('已模擬算力見底狀態 (<30%)', 'rose');
+                    }}
+                    className="px-2.5 py-1 rounded-lg bg-red-950/60 hover:bg-red-900/70 border border-red-500/40 text-[11px] font-mono text-red-300 transition-colors"
+                  >
+                    模擬見底 (&lt;30%)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setHp(88);
+                      setMp(85);
+                      showToast('雙軌算力已充能至高水位', 'emerald');
+                    }}
+                    className="px-2.5 py-1 rounded-lg bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-[11px] font-mono text-emerald-300 transition-colors"
+                  >
+                    滿載充能
+                  </button>
+                </div>
+              </div>
+
+              {/* Dual Progress Bars & Sliders */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                {/* HP Track: 實體肉體 */}
+                <div className="p-4 rounded-xl bg-[#121212]/90 border border-zinc-800">
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center gap-2">
+                      <span className="w-2.5 h-2.5 rounded-full bg-emerald-400" />
+                      <span className="text-sm font-bold text-zinc-100">實體肉體 (HP)</span>
+                      <span className="text-[11px] font-mono text-zinc-400">SOMATIC_VESSEL</span>
+                    </div>
+                    <span
+                      className={`text-lg font-mono font-black ${
+                        hp < 30 ? 'text-red-400 animate-pulse' : 'text-emerald-400'
+                      }`}
+                    >
+                      {hp}%
+                    </span>
+                  </div>
+
+                  {/* Visual Bar */}
+                  <div className="relative h-3.5 w-full bg-zinc-800/90 rounded-lg overflow-hidden border border-zinc-700/60 mb-3">
+                    {/* 30% Threshold Marker */}
+                    <div
+                      className="absolute top-0 bottom-0 left-[30%] w-0.5 bg-red-500/80 z-10"
+                      title="30% 警戒線"
+                    />
+                    <div
+                      className={`h-full transition-all duration-200 ${
+                        hp < 30
+                          ? 'bg-gradient-to-r from-red-600 via-red-500 to-orange-500'
+                          : 'bg-gradient-to-r from-emerald-600 via-emerald-400 to-teal-300'
+                      }`}
+                      style={{ width: `${hp}%` }}
+                    />
+                  </div>
+
+                  {/* Interactive Range Slider */}
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setHp((v) => Math.max(0, v - 10))}
+                      className="px-2 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-xs font-mono text-zinc-300"
+                    >
+                      -10
+                    </button>
+                    <input
+                      id="hp-slider"
+                      type="range"
+                      min="0"
+                      max="100"
+                      value={hp}
+                      onChange={(e) => setHp(Number(e.target.value))}
+                      aria-label="實體肉體 HP 滑桿"
+                      className="w-full accent-emerald-400 cursor-pointer h-2 bg-zinc-800 rounded-lg"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setHp((v) => Math.min(100, v + 10))}
+                      className="px-2 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-xs font-mono text-zinc-300"
+                    >
+                      +10
+                    </button>
+                  </div>
+                </div>
+
+                {/* MP Track: 情緒算力 */}
+                <div className="p-4 rounded-xl bg-[#121212]/90 border border-zinc-800">
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center gap-2">
+                      <span className="w-2.5 h-2.5 rounded-full bg-cyan-400" />
+                      <span className="text-sm font-bold text-zinc-100">情緒算力 (MP)</span>
+                      <span className="text-[11px] font-mono text-zinc-400">MENTAL_BANDWIDTH</span>
+                    </div>
+                    <span
+                      className={`text-lg font-mono font-black ${
+                        mp < 30 ? 'text-red-400 animate-pulse' : 'text-cyan-400'
+                      }`}
+                    >
+                      {mp}%
+                    </span>
+                  </div>
+
+                  {/* Visual Bar */}
+                  <div className="relative h-3.5 w-full bg-zinc-800/90 rounded-lg overflow-hidden border border-zinc-700/60 mb-3">
+                    {/* 30% Threshold Marker */}
+                    <div
+                      className="absolute top-0 bottom-0 left-[30%] w-0.5 bg-red-500/80 z-10"
+                      title="30% 警戒線"
+                    />
+                    <div
+                      className={`h-full transition-all duration-200 ${
+                        mp < 30
+                          ? 'bg-gradient-to-r from-red-600 via-orange-500 to-amber-400'
+                          : 'bg-gradient-to-r from-sky-600 via-cyan-400 to-indigo-400'
+                      }`}
+                      style={{ width: `${mp}%` }}
+                    />
+                  </div>
+
+                  {/* Interactive Range Slider */}
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setMp((v) => Math.max(0, v - 10))}
+                      className="px-2 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-xs font-mono text-zinc-300"
+                    >
+                      -10
+                    </button>
+                    <input
+                      id="mp-slider"
+                      type="range"
+                      min="0"
+                      max="100"
+                      value={mp}
+                      onChange={(e) => setMp(Number(e.target.value))}
+                      aria-label="情緒算力 MP 滑桿"
+                      className="w-full accent-cyan-400 cursor-pointer h-2 bg-zinc-800 rounded-lg"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setMp((v) => Math.min(100, v + 10))}
+                      className="px-2 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-xs font-mono text-zinc-300"
+                    >
+                      +10
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              {/* LOW ENERGY (<30%) FLASHING WARNING BANNER */}
+              {isLowEnergy ? (
+                <div className="mt-4 p-4 rounded-xl bg-red-950/80 border-2 border-red-500 flex flex-col sm:flex-row sm:items-center justify-between gap-3 animate-pulse">
+                  <div className="flex items-start sm:items-center gap-3">
+                    <ShieldAlert className="w-6 h-6 text-red-400 shrink-0 mt-0.5 sm:mt-0" />
+                    <div>
+                      <div className="text-[10px] font-mono uppercase tracking-widest text-red-300">
+                        CRITICAL_BANDWIDTH_ALERT // 雙軌算力低於 30% 警戒線
+                      </div>
+                      <p className="text-sm sm:text-base font-extrabold text-red-100 mt-0.5">
+                        「算力見底，今日建議開啟大爺模式，謝絕高耗能社交與勞動。」
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setBossMode(true);
+                      showToast('大爺模式已強制啟動：對外社交防火牆全開！', 'amber');
+                    }}
+                    className="px-3.5 py-2 rounded-lg bg-red-500 hover:bg-red-400 text-zinc-950 font-black text-xs font-mono shrink-0 transition-colors"
+                  >
+                    {bossMode ? '大爺護盾運行中' : '立即開啟大爺模式'}
+                  </button>
+                </div>
+              ) : (
+                <div className="mt-4 px-4 py-2.5 rounded-xl bg-zinc-950/80 border border-zinc-800 flex items-center justify-between text-xs text-zinc-400">
+                  <span className="flex items-center gap-2">
+                    <ShieldCheck className="w-4 h-4 text-emerald-400" />
+                    <span>算力水位穩定：目前具備充足頻寬進行深度創作與自我課題精煉。</span>
+                  </span>
+                  <span className="font-mono text-[11px] text-zinc-500">THRESHOLD: 30%</span>
+                </div>
+              )}
+            </section>
+
+            {/* ================================================================
+                MODULE 2: 情緒過濾器 (Boundary Filter)
+               ================================================================ */}
+            <section
+              id="module-boundary-filter"
+              className="rounded-2xl p-4 sm:p-6 bg-zinc-900/90 border border-zinc-800/90 shadow-xl"
+            >
+              <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
+                <div className="flex items-center gap-2.5">
+                  <div className="p-2 rounded-lg bg-rose-500/10 border border-rose-500/30 text-rose-400">
+                    <Crosshair className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <span className="text-[10px] font-mono uppercase tracking-widest text-zinc-400">
+                      MODULE_02 // ADLERIAN BOUNDARY FILTER
+                    </span>
+                    <h2 className="text-lg sm:text-xl font-black tracking-tight text-zinc-100">
+                      情緒過濾器 (Boundary Filter)
+                    </h2>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <span className="px-2.5 py-1 rounded-lg bg-rose-950/60 border border-rose-500/40 text-xs font-mono text-rose-300">
+                    今日已粉碎他人課題：<strong className="text-rose-200">{shatteredCount}</strong> 次
+                  </span>
+                </div>
+              </div>
+
+              {/* Quick Preset Chips */}
+              <div className="mb-3 flex flex-wrap items-center gap-1.5">
+                <span className="text-[11px] font-mono text-zinc-400 mr-1">快速帶入壓力源：</span>
+                {BOUNDARY_PRESETS.map((preset, idx) => (
+                  <button
+                    key={idx}
+                    type="button"
+                    onClick={() => setStressInput(preset)}
+                    className="text-[11px] px-2.5 py-1 rounded-full bg-zinc-800/90 hover:bg-zinc-700 text-zinc-300 border border-zinc-700 transition-colors"
+                  >
+                    #{preset.slice(0, 8)}...
+                  </button>
+                ))}
+              </div>
+
+              {/* Input / Shatter Stage Box */}
+              <div className="relative rounded-xl bg-[#121212] border border-zinc-800 p-3.5 overflow-hidden">
+                {shatterStage === 'idle' ? (
+                  <textarea
+                    id="boundary-input"
+                    rows={2}
+                    value={stressInput}
+                    onChange={(e) => setStressInput(e.target.value)}
+                    placeholder="在此傾倒讓你煩躁、內耗或焦慮的壓力事件... 寫下來，然後決定它的邊界歸屬。"
+                    className="w-full bg-transparent text-zinc-100 placeholder-zinc-500 text-sm focus:outline-none resize-none"
+                  />
+                ) : (
+                  <div className="min-h-[56px] flex items-center justify-center relative py-3">
+                    {/* Stage 1: Laser Strike-through & Glitch */}
+                    <div
+                      className={`relative text-sm sm:text-base font-bold text-rose-300 px-3 transition-all duration-300 ${
+                        shatterStage === 'slashing'
+                          ? 'shatter-glitch opacity-100'
+                          : 'opacity-0 scale-125 blur-sm'
+                      }`}
+                    >
+                      <span className="line-through decoration-red-500 decoration-4">{shatterText}</span>
+                      <span className="block text-[10px] font-mono text-red-400 uppercase tracking-widest mt-1">
+                        [BOUNDARY_FIREWALL // 正在粉碎外部雜訊...]
+                      </span>
+                      <div className="laser-slash-line absolute top-1/2 -left-2 h-1 bg-gradient-to-r from-red-500 via-orange-400 to-rose-500 shadow-[0_0_16px_#ef4444] -rotate-2" />
+                    </div>
+
+                    {/* Stage 2: Particle Explosion */}
+                    {shatterStage === 'exploding' && (
+                      <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                        {shatterParticles.map((p) => (
+                          <span
+                            key={p.id}
+                            style={{
+                              color: p.color,
+                              transform: `translate(${p.dx}px, ${p.dy}px) rotate(${p.rot}deg)`,
+                              opacity: 0,
+                              transition: 'all 0.58s cubic-bezier(0.16, 1, 0.3, 1)'
+                            }}
+                            className="absolute font-mono font-black text-sm select-none"
+                          >
+                            {p.char}
+                          </span>
+                        ))}
+                        <span className="text-xs font-mono font-black tracking-widest text-rose-400 animate-ping">
+                          SHATTERED // 邊界阻擋成功 +25 EXP
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Dual Action Buttons */}
+                <div className="mt-3 pt-3 border-t border-zinc-800/80 grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                  <button
+                    type="button"
+                    onClick={handleInternalAbsorb}
+                    disabled={shatterStage !== 'idle'}
+                    className="py-2.5 px-4 rounded-xl bg-zinc-800/90 hover:bg-emerald-950/70 border border-zinc-700 hover:border-emerald-500/60 text-zinc-200 hover:text-emerald-200 font-bold text-xs sm:text-sm flex items-center justify-center gap-2 transition-all"
+                  >
+                    <Brain className="w-4 h-4 text-emerald-400" />
+                    <span>自我課題 (內部吸收)</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleExternalShatter}
+                    disabled={shatterStage !== 'idle'}
+                    className="py-2.5 px-4 rounded-xl bg-gradient-to-r from-rose-600 to-orange-600 hover:from-rose-500 hover:to-orange-500 text-zinc-950 font-black text-xs sm:text-sm flex items-center justify-center gap-2 shadow-[0_0_20px_rgba(244,63,94,0.3)] transition-all"
+                  >
+                    <Flame className="w-4 h-4" />
+                    <span>他人課題 (邊界阻擋・粉碎)</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Internal Refinement Log (Absorbed Self Tasks) */}
+              {selfTasks.length > 0 && (
+                <div className="mt-4">
+                  <div className="text-[11px] font-mono text-zinc-400 uppercase tracking-wider mb-2 flex items-center justify-between">
+                    <span>INTERNAL_REFINEMENT_LOG // 已吸收之自我課題 ({selfTasks.length})</span>
+                    <span>點擊可標記完成</span>
+                  </div>
+                  <div className="space-y-2">
+                    {selfTasks.slice(0, 4).map((task) => (
+                      <div
+                        key={task.id}
+                        className="px-3.5 py-2.5 rounded-xl bg-[#121212]/80 border border-zinc-800/90 flex items-center justify-between gap-3"
+                      >
+                        <button
+                          type="button"
+                          onClick={() => toggleSelfTask(task.id)}
+                          className="flex items-center gap-2.5 text-left flex-1 min-w-0"
+                        >
+                          <span
+                            className={`w-4 h-4 rounded flex items-center justify-center border shrink-0 ${
+                              task.resolved
+                                ? 'bg-emerald-500 border-emerald-400 text-zinc-950'
+                                : 'border-zinc-600'
+                            }`}
+                          >
+                            {task.resolved && <Check className="w-3 h-3 stroke-[3]" />}
+                          </span>
+                          <span
+                            className={`text-xs sm:text-sm truncate ${
+                              task.resolved ? 'line-through text-zinc-500' : 'text-zinc-200'
+                            }`}
+                          >
+                            {task.text}
+                          </span>
+                        </button>
+                        <div className="flex items-center gap-2 shrink-0">
+                          <span className="text-[10px] font-mono text-zinc-500">{task.createdAt}</span>
+                          <button
+                            type="button"
+                            onClick={() => removeSelfTask(task.id)}
+                            aria-label="刪除課題"
+                            className="text-zinc-500 hover:text-rose-400 p-1"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </section>
+
+            {/* ================================================================
+                MODULE 3: 靈感掉落背包 (Inspiration Loot)
+               ================================================================ */}
+            <section
+              id="module-inspiration-loot"
+              className="rounded-2xl p-4 sm:p-6 bg-zinc-900/90 border border-zinc-800/90 shadow-xl"
+            >
+              <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
+                <div className="flex items-center gap-2.5">
+                  <div className="p-2 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-400">
+                    <Package className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <span className="text-[10px] font-mono uppercase tracking-widest text-zinc-400">
+                      MODULE_03 // POE DOPAMINE LOOT VAULT
+                    </span>
+                    <h2 className="text-lg sm:text-xl font-black tracking-tight text-zinc-100">
+                      靈感掉落背包 (Inspiration Loot)
+                    </h2>
+                  </div>
+                </div>
+
+                {/* Drop Rate Pill Legend */}
+                <div className="flex flex-wrap items-center gap-1.5 text-[10px] font-mono">
+                  <span className="px-2 py-0.5 rounded bg-zinc-200 text-zinc-950 font-bold">
+                    白 60% ({rarityCounts.normal})
+                  </span>
+                  <span className="px-2 py-0.5 rounded bg-sky-400 text-slate-950 font-bold">
+                    藍 25% ({rarityCounts.magic})
+                  </span>
+                  <span className="px-2 py-0.5 rounded bg-yellow-400 text-zinc-950 font-bold">
+                    黃 10% ({rarityCounts.rare})
+                  </span>
+                  <span className="px-2 py-0.5 rounded bg-orange-500 text-zinc-950 font-black">
+                    橘 5% ({rarityCounts.unique})
+                  </span>
+                </div>
+              </div>
+
+              {/* Category Selector Tabs */}
+              <div className="grid grid-cols-3 gap-2 mb-3">
+                {CATEGORIES.map((cat) => {
+                  const Icon = cat.icon;
+                  const active = selectedCategory === cat.id;
+                  return (
+                    <button
+                      key={cat.id}
+                      type="button"
+                      onClick={() => setSelectedCategory(cat.id)}
+                      className={`p-2.5 rounded-xl border text-left transition-all flex items-center gap-2 ${
+                        active
+                          ? 'bg-zinc-800 border-cyan-400 text-zinc-100 shadow-[0_0_15px_rgba(56,189,248,0.2)]'
+                          : 'bg-[#121212] border-zinc-800 text-zinc-400 hover:border-zinc-700'
+                      }`}
+                    >
+                      <Icon className={`w-4 h-4 shrink-0 ${cat.accent}`} />
+                      <div className="min-w-0">
+                        <div className="text-xs font-bold truncate">{cat.label}</div>
+                        <div className="text-[9px] font-mono text-zinc-500 hidden sm:block">{cat.code}</div>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+
+              {/* Inspiration Input Form */}
+              <form onSubmit={handleDropInspiration} className="rounded-xl bg-[#121212] border border-zinc-800 p-3.5">
+                <textarea
+                  id="inspiration-input"
+                  rows={2}
+                  value={inspirationInput}
+                  onChange={(e) => setInspirationInput(e.target.value)}
+                  placeholder={
+                    selectedCategory === 'tattoo'
+                      ? '記錄刺青手稿構想（例如：部位、線條風格、象徵符號）...'
+                      : selectedCategory === 'rap'
+                      ? '寫下剛蹦出來的饒舌歌詞 Punchline、韻腳或 Flow 結構...'
+                      : '寫下 Podcast 單集企劃、訪談提綱或核心觀點...'
+                  }
+                  className="w-full bg-transparent text-zinc-100 placeholder-zinc-500 text-sm focus:outline-none resize-none"
+                />
+                <div className="mt-3 pt-3 border-t border-zinc-800/80 flex flex-wrap items-center justify-between gap-2">
+                  <button
+                    type="button"
+                    onClick={handleFillRandomInspiration}
+                    className="px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-xs font-mono text-zinc-300 flex items-center gap-1.5 transition-colors"
+                  >
+                    <Sparkles className="w-3.5 h-3.5 text-amber-400" />
+                    <span>隨機靈感湧現</span>
+                  </button>
+
+                  <button
+                    type="submit"
+                    className="px-5 py-2 rounded-xl bg-gradient-to-r from-cyan-400 via-sky-400 to-amber-300 hover:opacity-95 text-zinc-950 font-black text-xs sm:text-sm flex items-center gap-2 shadow-[0_0_20px_rgba(56,189,248,0.35)] transition-all"
+                  >
+                    <Award className="w-4 h-4" />
+                    <span>送出並鑑定稀有度 (Drop Loot)</span>
+                  </button>
+                </div>
+              </form>
+
+              {/* Filter Bar */}
+              <div className="mt-4 flex flex-wrap items-center justify-between gap-2">
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {[
+                    { id: 'all', label: '全部裝備' },
+                    { id: 'unique', label: '橘・傳奇' },
+                    { id: 'rare', label: '黃・稀有' },
+                    { id: 'magic', label: '藍・魔法' },
+                    { id: 'normal', label: '白・普通' }
+                  ].map((tab) => (
+                    <button
+                      key={tab.id}
+                      type="button"
+                      onClick={() => setFilterRarity(tab.id)}
+                      className={`px-2.5 py-1 rounded-lg text-xs font-mono transition-colors ${
+                        filterRarity === tab.id
+                          ? 'bg-cyan-400 text-zinc-950 font-bold'
+                          : 'bg-[#121212] text-zinc-400 border border-zinc-800 hover:border-zinc-700'
+                      }`}
+                    >
+                      {tab.label}
+                    </button>
+                  ))}
+                </div>
+
+                <span className="text-[11px] font-mono text-zinc-400">
+                  共 {filteredLoot.length} 件靈感結晶
+                </span>
+              </div>
+
+              {/* Dropped Inspiration Loot Cards Grid */}
+              <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-3.5">
+                {filteredLoot.map((item) => {
+                  const tier = RARITY_TIERS[item.rarity] || RARITY_TIERS.normal;
+                  const catObj = CATEGORIES.find((c) => c.id === item.category) || CATEGORIES[0];
+                  const CatIcon = catObj.icon;
+                  const isNewlyDropped = latestDrop && latestDrop.id === item.id;
+
+                  return (
+                    <div
+                      key={item.id}
+                      className={`relative rounded-xl p-4 border-2 transition-all overflow-hidden ${tier.bgClass} ${tier.borderClass} ${tier.glowClass}`}
+                    >
+                      {/* PoE Vertical Loot Beam Effect on Rare/Unique or Newly Dropped */}
+                      {(item.rarity === 'unique' || item.rarity === 'rare' || isNewlyDropped) && (
+                        <div
+                          className={`poe-loot-beam pointer-events-none absolute -top-6 right-8 w-8 h-36 bg-gradient-to-b ${tier.beamColor} blur-md`}
+                        />
+                      )}
+
+                      {/* Card Header */}
+                      <div className="flex items-center justify-between gap-2 mb-2 relative z-10">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span className={`text-[10px] font-mono px-2 py-0.5 rounded uppercase ${tier.badgeClass}`}>
+                            {tier.label}
+                          </span>
+                          <span className="text-xs font-mono text-zinc-300 flex items-center gap-1 truncate">
+                            <CatIcon className={`w-3.5 h-3.5 ${catObj.accent}`} />
+                            {catObj.label}
+                          </span>
+                        </div>
+
+                        <div className="flex items-center gap-1 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => handleTogglePin(item.id)}
+                            title="釘選靈感"
+                            className={`p-1 rounded ${
+                              item.pinned ? 'text-amber-400' : 'text-zinc-500 hover:text-zinc-300'
+                            }`}
+                          >
+                            <Star className="w-3.5 h-3.5 fill-current" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleCopyText(item.content, item.id)}
+                            title="複製靈感內容"
+                            className="p-1 rounded text-zinc-400 hover:text-cyan-300"
+                          >
+                            {copiedId === item.id ? (
+                              <Check className="w-3.5 h-3.5 text-emerald-400" />
+                            ) : (
+                              <Copy className="w-3.5 h-3.5" />
+                            )}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleDisenchantLoot(item)}
+                            title="分解為認知星塵"
+                            className="p-1 rounded text-zinc-500 hover:text-rose-400"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Item PoE Name Prefix */}
+                      <div className={`text-xs font-mono font-bold mb-1 ${tier.textClass}`}>
+                        『{item.prefix}{catObj.label}結晶』
+                      </div>
+
+                      {/* Main Inspiration Content */}
+                      <p className="text-sm text-zinc-100 leading-relaxed mb-3 relative z-10">
+                        {item.content}
+                      </p>
+
+                      {/* PoE Affix Footer */}
+                      <div className="pt-2.5 border-t border-zinc-800/80 flex items-center justify-between gap-2 text-[11px] font-mono relative z-10">
+                        <span className={`${tier.textClass} truncate`}>{item.affix}</span>
+                        <button
+                          type="button"
+                          onClick={() => handleChaosReroll(item.id)}
+                          title="消耗 20 星塵重鑄稀有度"
+                          className="px-2 py-0.5 rounded bg-zinc-950/90 hover:bg-zinc-800 border border-zinc-700 text-amber-300 shrink-0 flex items-center gap-1"
+                        >
+                          <RefreshCw className="w-3 h-3" />
+                          <span>重鑄(20塵)</span>
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </section>
+
+            {/* ================================================================
+                MODULE 4: 每日修復結算 (Daily Recovery)
+               ================================================================ */}
+            <section
+              id="module-daily-recovery"
+              className="rounded-2xl p-4 sm:p-6 bg-gradient-to-br from-zinc-900 via-[#151821] to-zinc-950 border border-indigo-500/30 shadow-xl"
+            >
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                <div className="flex items-start gap-3">
+                  <div className="p-2.5 rounded-xl bg-indigo-500/15 border border-indigo-400/40 text-indigo-300 shrink-0">
+                    <Moon className="w-6 h-6" />
+                  </div>
+                  <div>
+                    <span className="text-[10px] font-mono uppercase tracking-widest text-indigo-300">
+                      MODULE_04 // DAILY RECOVERY & PHILOSOPHICAL SETTLEMENT
+                    </span>
+                    <h2 className="text-lg sm:text-xl font-black text-zinc-100">
+                      每日修復結算 (Daily Recovery)
+                    </h2>
+                    <p className="text-xs sm:text-sm text-zinc-400 mt-1">
+                      睡前啟動休眠程序，系統將根據今日收集的{' '}
+                      <strong className="text-amber-300">{lootItems.length} 件靈感</strong> 與{' '}
+                      <strong className="text-rose-300">{shatteredCount} 次情緒粉碎</strong>{' '}
+                      進行哲學語錄結算，並將 HP / MP 完整修復至 100%。
+                    </p>
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={openRecoveryModal}
+                  className="px-6 py-3.5 rounded-xl bg-gradient-to-r from-indigo-500 via-purple-500 to-cyan-400 hover:opacity-95 text-zinc-950 font-black text-sm font-mono tracking-wide flex items-center justify-center gap-2 shadow-[0_0_25px_rgba(99,102,241,0.45)] shrink-0 transition-all"
+                >
+                  <Moon className="w-4 h-4 fill-current" />
+                  <span>進入休眠 (Enter Hibernation)</span>
+                </button>
+              </div>
+
+              {/* Recent Recovery Log Preview */}
+              {sleepLogs.length > 0 && (
+                <div className="mt-4 pt-4 border-t border-zinc-800/80">
+                  <div className="text-[10px] font-mono uppercase tracking-wider text-zinc-400 mb-2">
+                    RECENT_HIBERNATION_LOGS // 近期休眠結算紀錄
+                  </div>
+                  <div className="space-y-2">
+                    {sleepLogs.slice(0, 2).map((log) => (
+                      <div
+                        key={log.id}
+                        className="p-3 rounded-xl bg-[#121212]/90 border border-zinc-800 text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-2"
+                      >
+                        <div className="text-zinc-300 italic">{log.quote}</div>
+                        <div className="flex items-center gap-2 shrink-0 font-mono text-[10px] text-zinc-400">
+                          <span className="px-2 py-0.5 rounded bg-indigo-500/20 text-indigo-300">
+                            {log.rank}
+                          </span>
+                          <span>{log.date}</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </section>
+          </>
+        )}
+
+        {/* ================================================================
+            TAB 2: LOOT VAULT & STATS VIEW (背包圖鑑與備份)
+           ================================================================ */}
+        {activeTab === 'vault' && (
+          <section className="rounded-2xl p-4 sm:p-6 bg-zinc-900/90 border border-zinc-800 space-y-5">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <span className="text-[10px] font-mono uppercase tracking-widest text-cyan-400">
+                  INVENTORY_ARCHIVE // OFFLINE-FIRST VAULT
+                </span>
+                <h2 className="text-xl font-black text-zinc-100">
+                  靈感裝備庫與離線資料管理
+                </h2>
+              </div>
+              <button
+                type="button"
+                onClick={handleExportJSON}
+                className="px-3.5 py-2 rounded-xl bg-cyan-400 text-zinc-950 font-bold text-xs font-mono flex items-center gap-1.5"
+              >
+                <Download className="w-4 h-4" />
+                <span>匯出 JSON 備份</span>
+              </button>
+            </div>
+
+            {/* Rarity Breakdown Cards */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              {Object.values(RARITY_TIERS).map((tier) => (
+                <div
+                  key={tier.id}
+                  className={`p-3.5 rounded-xl border ${tier.bgClass} ${tier.borderClass}`}
+                >
+                  <div className="flex items-center justify-between">
+                    <span className={`text-xs font-mono font-bold ${tier.textClass}`}>
+                      {tier.label}
+                    </span>
+                    <span className="text-[10px] font-mono text-zinc-400">機率 {tier.probText}</span>
+                  </div>
+                  <div className="text-2xl font-mono font-black text-zinc-100 mt-1">
+                    {rarityCounts[tier.id]} <span className="text-xs font-normal text-zinc-400">件</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {/* Full Loot List */}
+            <div className="space-y-3">
+              {lootItems.map((item) => {
+                const tier = RARITY_TIERS[item.rarity] || RARITY_TIERS.normal;
+                const catObj = CATEGORIES.find((c) => c.id === item.category) || CATEGORIES[0];
+                return (
+                  <div
+                    key={item.id}
+                    className={`p-4 rounded-xl border ${tier.bgClass} ${tier.borderClass} flex flex-col sm:flex-row sm:items-center justify-between gap-3`}
+                  >
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-2">
+                        <span className={`text-[10px] font-mono px-2 py-0.5 rounded ${tier.badgeClass}`}>
+                          {tier.label}
+                        </span>
+                        <span className="text-xs font-mono text-zinc-400">{catObj.label}</span>
+                        <span className="text-[10px] font-mono text-zinc-500">{item.createdAt}</span>
+                      </div>
+                      <p className="text-sm text-zinc-100 font-medium">{item.content}</p>
+                      <p className={`text-xs font-mono ${tier.textClass}`}>{item.affix}</p>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => handleChaosReroll(item.id)}
+                        className="px-2.5 py-1.5 rounded-lg bg-zinc-950 border border-zinc-700 text-xs font-mono text-amber-300"
+                      >
+                        重鑄(20塵)
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleCopyText(item.content, item.id)}
+                        className="px-2.5 py-1.5 rounded-lg bg-zinc-800 text-xs font-mono text-zinc-200"
+                      >
+                        複製
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </section>
+        )}
+
+        {/* ================================================================
+            TAB 3: PWA ARCHITECTURE & MOBILE INSTALL GUIDE (架構與安裝指南)
+           ================================================================ */}
+        {activeTab === 'blueprint' && (
+          <section className="rounded-2xl p-4 sm:p-6 bg-zinc-900/90 border border-zinc-800 space-y-6">
+            <div>
+              <span className="text-[10px] font-mono uppercase tracking-widest text-cyan-400">
+                PWA_FULLSTACK_BLUEPRINT // OFFLINE-FIRST ARCHITECTURE
+              </span>
+              <h2 className="text-xl font-black text-zinc-100 mt-0.5">
+                「認知生態圈」PWA 整體檔案結構規劃與手機安裝指南
+              </h2>
+              <p className="text-xs sm:text-sm text-zinc-400 mt-1">
+                本應用同時提供獨立可安裝的完整專案壓縮包（含 <code className="text-cyan-300">manifest.json</code>、
+                <code className="text-cyan-300">sw.js</code> 與四大模組組件源碼）。以下為完整工程架構與關鍵配置：
+              </p>
+            </div>
+
+            {/* 1. Directory Structure */}
+            <div className="rounded-xl bg-[#121212] border border-zinc-800 p-4">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-xs font-mono font-bold text-cyan-400 flex items-center gap-2">
+                  <FolderTree className="w-4 h-4" />
+                  <span>1. 整體檔案結構規劃 (Project Directory Tree)</span>
+                </span>
+                <button
+                  type="button"
+                  onClick={() => handleCopyText(PWA_FILE_TREE, 'tree')}
+                  className="text-xs font-mono text-zinc-400 hover:text-cyan-300 flex items-center gap-1"
+                >
+                  <Copy className="w-3.5 h-3.5" />
+                  <span>複製結構</span>
+                </button>
+              </div>
+              <pre className="text-[11px] sm:text-xs font-mono text-zinc-300 overflow-x-auto leading-relaxed">
+                {PWA_FILE_TREE}
+              </pre>
+            </div>
+
+            {/* 2. Mobile Installation Guide */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="p-4 rounded-xl bg-[#121212] border border-zinc-800">
+                <div className="flex items-center gap-2 text-sm font-bold text-emerald-400 mb-2">
+                  <Smartphone className="w-4 h-4" />
+                  <span>iOS (iPhone Safari) 安裝為原生 App 步驟</span>
+                </div>
+                <ol className="text-xs text-zinc-300 space-y-1.5 list-decimal list-inside">
+                  <li>解壓縮專案包並部署（或透過本地 HTTPS/區網伺服器開啟 <code className="text-cyan-300">index.html</code>）。</li>
+                  <li>在 iPhone <strong>Safari</strong> 點擊底部中間的「分享」圖示。</li>
+                  <li>向下滑動選單，點擊 <strong>「加入主畫面 (Add to Home Screen)」</strong>。</li>
+                  <li>從主畫面點擊「認知生態圈」賽博大腦結晶圖示，即可以全螢幕無網址列 (`standalone`) 離線啟動！</li>
+                </ol>
+              </div>
+
+              <div className="p-4 rounded-xl bg-[#121212] border border-zinc-800">
+                <div className="flex items-center gap-2 text-sm font-bold text-cyan-400 mb-2">
+                  <Smartphone className="w-4 h-4" />
+                  <span>Android (Chrome / Edge) 安裝為原生 App 步驟</span>
+                </div>
+                <ol className="text-xs text-zinc-300 space-y-1.5 list-decimal list-inside">
+                  <li>使用 Chrome 開啟應用網址，Service Worker (`sw.js`) 將自動完成離線資產快取。</li>
+                  <li>點擊網址列右側或右上角選單的 <strong>「安裝應用程式 (Install App)」</strong>。</li>
+                  <li>確認後系統即會在手機桌面建立獨立 APK 級別的 WebAPK 捷徑，支援飛航模式離線讀寫。</li>
+                </ol>
+              </div>
+            </div>
+
+            {/* 3. Key PWA Config Snippets */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="rounded-xl bg-[#121212] border border-zinc-800 p-4">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-xs font-mono font-bold text-amber-400">public/manifest.json</span>
+                  <button
+                    type="button"
+                    onClick={() => handleCopyText(CODE_SNIPPETS.manifest, 'manifest')}
+                    className="text-xs font-mono text-zinc-400 hover:text-cyan-300"
+                  >
+                    複製
+                  </button>
+                </div>
+                <pre className="text-[11px] font-mono text-zinc-300 overflow-x-auto">
+                  {CODE_SNIPPETS.manifest}
+                </pre>
+              </div>
+
+              <div className="rounded-xl bg-[#121212] border border-zinc-800 p-4">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-xs font-mono font-bold text-sky-400">public/sw.js (Offline-First)</span>
+                  <button
+                    type="button"
+                    onClick={() => handleCopyText(CODE_SNIPPETS.sw, 'sw')}
+                    className="text-xs font-mono text-zinc-400 hover:text-cyan-300"
+                  >
+                    複製
+                  </button>
+                </div>
+                <pre className="text-[11px] font-mono text-zinc-300 overflow-x-auto">
+                  {CODE_SNIPPETS.sw}
+                </pre>
+              </div>
+            </div>
+          </section>
+        )}
+      </main>
+
+      {/* ====================================================================
+          DAILY RECOVERY HIBERNATION MODAL (每日修復結算艙)
+         ==================================================================== */}
+      {showRecoveryModal && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-4">
+          <div className="w-full max-w-lg rounded-2xl bg-zinc-900 border-2 border-indigo-500/70 shadow-[0_0_45px_rgba(99,102,241,0.35)] p-5 sm:p-6 space-y-5">
+            <div className="flex items-center justify-between border-b border-zinc-800 pb-3">
+              <div className="flex items-center gap-2.5">
+                <Moon className="w-5 h-5 text-indigo-400" />
+                <div>
+                  <div className="text-[10px] font-mono uppercase tracking-widest text-indigo-300">
+                    HIBERNATION_PROTOCOL // 每日修復結算艙
+                  </div>
+                  <h3 className="text-lg font-black text-zinc-100">今日認知生態結算報告</h3>
+                </div>
+              </div>
+              <span className="px-2.5 py-1 rounded-lg bg-indigo-500/20 border border-indigo-400/40 text-xs font-mono font-bold text-indigo-300">
+                {currentPhilosophy.rank}
+              </span>
+            </div>
+
+            {/* Today's Quantitative Metrics */}
+            <div className="grid grid-cols-3 gap-2.5 text-center">
+              <div className="p-3 rounded-xl bg-[#121212] border border-zinc-800">
+                <div className="text-[10px] font-mono text-zinc-400">靈感掉落數</div>
+                <div className="text-xl font-mono font-black text-amber-400 mt-0.5">
+                  {lootItems.length}
+                </div>
+              </div>
+              <div className="p-3 rounded-xl bg-[#121212] border border-zinc-800">
+                <div className="text-[10px] font-mono text-zinc-400">情緒粉碎次數</div>
+                <div className="text-xl font-mono font-black text-rose-400 mt-0.5">
+                  {shatteredCount}
+                </div>
+              </div>
+              <div className="p-3 rounded-xl bg-[#121212] border border-zinc-800">
+                <div className="text-[10px] font-mono text-zinc-400">當前 HP / MP</div>
+                <div className="text-sm font-mono font-black text-cyan-400 mt-1.5">
+                  {hp}% / {mp}%
+                </div>
+              </div>
+            </div>
+
+            {/* Philosophical Quote Feedback Box */}
+            <div className="p-4 rounded-xl bg-gradient-to-br from-indigo-950/60 via-[#121212] to-zinc-950 border border-indigo-500/40 space-y-2">
+              <div className="text-xs font-mono font-bold text-indigo-300">
+                {currentPhilosophy.title}
+              </div>
+              <blockquote className="text-sm sm:text-base font-bold text-zinc-100 leading-relaxed">
+                {currentPhilosophy.quote}
+              </blockquote>
+              <p className="text-xs text-zinc-400 pt-1">{currentPhilosophy.sub}</p>
+            </div>
+
+            {/* Modal Actions */}
+            <div className="flex flex-col sm:flex-row items-center justify-end gap-2.5 pt-2">
+              <button
+                type="button"
+                onClick={() => setShowRecoveryModal(false)}
+                className="w-full sm:w-auto px-4 py-2.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs font-mono font-bold"
+              >
+                稍後再睡
+              </button>
+              <button
+                type="button"
+                onClick={handleCompleteRecovery}
+                className="w-full sm:w-auto px-5 py-2.5 rounded-xl bg-gradient-to-r from-indigo-500 via-cyan-400 to-emerald-400 text-zinc-950 font-black text-xs sm:text-sm font-mono flex items-center justify-center gap-2 shadow-lg"
+              >
+                <RotateCcw className="w-4 h-4" />
+                <span>確認休眠並修復雙軌算力至 100%</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ====================================================================
+          MOBILE-FIRST BOTTOM NAVIGATION BAR (RWD 拇指熱區導覽列)
+         ==================================================================== */}
+      <nav
+        aria-label="底部主導覽列"
+        className="fixed bottom-0 left-0 right-0 z-40 bg-[#121212]/95 backdrop-blur-lg border-t border-zinc-800"
+      >
+        <div className="max-w-4xl mx-auto px-3 py-2 grid grid-cols-4 gap-1.5">
+          <button
+            type="button"
+            onClick={() => setActiveTab('dashboard')}
+            className={`py-2 px-2 rounded-xl flex flex-col items-center justify-center gap-1 transition-all ${
+              activeTab === 'dashboard'
+                ? 'bg-cyan-500/15 text-cyan-300 border border-cyan-500/40'
+                : 'text-zinc-400 hover:text-zinc-200'
+            }`}
+          >
+            <Sliders className="w-4 h-4" />
+            <span className="text-[10px] font-mono font-bold">認知中樞</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveTab('vault')}
+            className={`py-2 px-2 rounded-xl flex flex-col items-center justify-center gap-1 transition-all ${
+              activeTab === 'vault'
+                ? 'bg-amber-500/15 text-amber-300 border border-amber-500/40'
+                : 'text-zinc-400 hover:text-zinc-200'
+            }`}
+          >
+            <Layers className="w-4 h-4" />
+            <span className="text-[10px] font-mono font-bold">掉落背包 ({lootItems.length})</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={openRecoveryModal}
+            className="py-2 px-2 rounded-xl flex flex-col items-center justify-center gap-1 text-indigo-300 hover:bg-indigo-500/15 transition-all"
+          >
+            <Moon className="w-4 h-4" />
+            <span className="text-[10px] font-mono font-bold">進入休眠</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveTab('blueprint')}
+            className={`py-2 px-2 rounded-xl flex flex-col items-center justify-center gap-1 transition-all ${
+              activeTab === 'blueprint'
+                ? 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/40'
+                : 'text-zinc-400 hover:text-zinc-200'
+            }`}
+          >
+            <Terminal className="w-4 h-4" />
+            <span className="text-[10px] font-mono font-bold">PWA 架構</span>
+          </button>
+        </div>
+      </nav>
+    </div>
+  );
+}
